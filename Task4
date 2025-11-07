@@ -1,0 +1,99 @@
+import sys, math, cv2, numpy as np
+
+Pt = tuple  # (x, y)
+
+def orient(a: Pt, b: Pt, c: Pt) -> int:
+    return (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])
+
+def segments_properly_intersect(a: Pt, b: Pt, c: Pt, d: Pt) -> bool:
+    o1 = orient(a,b,c); o2 = orient(a,b,d)
+    o3 = orient(c,d,a); o4 = orient(c,d,b)
+    return (o1*o2 < 0) and (o3*o4 < 0)
+
+def extract_polygons(img_path: str, eps: float = 1.0):
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    H, W = img.shape
+    _, mask = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    polys = []
+    for c in cnts:
+        if cv2.contourArea(c) < 5: 
+            continue
+        approx = cv2.approxPolyDP(c, eps, True)
+        poly = [(int(p[0][0]), int(p[0][1])) for p in approx]
+        if len(poly) >= 3:
+            polys.append(poly)
+    return polys, (W, H), img
+
+def segment_blocked_by_polygon(p: Pt, q: Pt, poly):
+    
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i+1) % n]
+        if segments_properly_intersect(p, q, a, b):
+            return True
+    mx, my = (p[0]+q[0])/2.0, (p[1]+q[1])/2.0
+    if cv2.pointPolygonTest(np.array(poly, np.int32), (mx, my), False) > 0:
+        return True
+    return False
+
+def lies_on_border(p: Pt, q: Pt, W: int, H: int) -> bool:
+    
+    return ((p[1]==0 and q[1]==0) or (p[1]==H-1 and q[1]==H-1) or
+            (p[0]==0 and q[0]==0) or (p[0]==W-1 and q[0]==W-1))
+
+def build_visibility_graph(polys, W, H):
+    start, goal = (0,0), (W-1, H-1)
+    nodes = [start, goal] + [v for poly in polys for v in poly]
+    nodes = list(dict.fromkeys(nodes))  
+    n = len(nodes)
+    adj = [[] for _ in range(n)]
+    for i in range(n):
+        for j in range(i+1, n):
+            p, q = nodes[i], nodes[j]
+            if lies_on_border(p, q, W, H): 
+                continue
+            blocked = False
+            for poly in polys:
+                if segment_blocked_by_polygon(p, q, poly):
+                    blocked = True; break
+            if not blocked:
+                w = math.hypot(q[0]-p[0], q[1]-p[1])
+                adj[i].append((j, w)); adj[j].append((i, w))
+    return nodes, adj
+
+def dijkstra(nodes, adj, start: Pt, goal: Pt) -> float:
+    import heapq
+    n = len(nodes)
+    s, t = nodes.index(start), nodes.index(goal)
+    INF = 1e18
+    dist = [INF]*n; dist[s] = 0.0
+    pq = [(0.0, s)]
+    while pq:
+        d, i = heapq.heappop(pq)
+        if d != dist[i]: 
+            continue
+        if i == t: 
+            break
+        for j, w in adj[i]:
+            nd = d + w
+            if nd < dist[j]:
+                dist[j] = nd
+                heapq.heappush(pq, (nd, j))
+    return dist[t]
+
+def main():
+    path = sys.argv[1] if len(sys.argv) > 1 else "input.png"
+    polys, (W, H), gray = extract_polygons(path, eps=1.0)
+    
+    if gray[0,0] <= 127 or gray[H-1, W-1] <= 127:
+        print("0.00"); return
+    nodes, adj = build_visibility_graph(polys, W, H)
+    px = dijkstra(nodes, adj, (0,0), (W-1, H-1))
+    if px >= 1e17:
+        print("0.00")           
+    else:
+        print(f"{px*0.01:.2f}") 
+
+if __name__ == "__main__":
+    main()
