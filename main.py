@@ -16,7 +16,10 @@ def normalize_angle_theta(theta: float) -> float:
     return theta
 
 
-def merge_collinear_segments(segments: Iterable[Tuple[float, float, float, float]], angle_thresh_deg: float = 5.0, rho_thresh: float = 20.0) -> list[Tuple[float, float, float, float]]:
+def merge_collinear_segments(segments: Iterable[Tuple[float, float, float, float]],
+                             angle_thresh_deg: float = 5.0,
+                             rho_thresh: float = 20.0,
+                             extend_px: float = 0.0) -> list[Tuple[float, float, float, float]]:
     """
     segments: list of (x1,y1,x2,y2)
     Возвращает список объединённых сегментов (по кластерам коллинеарности).
@@ -86,7 +89,9 @@ def merge_collinear_segments(segments: Iterable[Tuple[float, float, float, float
         nx = -dy_dir
         ny = dx_dir
         rho_avg: float = sum(seg_infos[k]['rho'] for k in cluster) / len(cluster)
-
+        if extend_px > 0.0:
+            tmin -= extend_px
+            tmax += extend_px
 
         x_start: float = dx_dir * tmin + nx * rho_avg
         y_start: float = dy_dir * tmin + ny * rho_avg
@@ -132,37 +137,41 @@ def intersection_point(seg1: tuple[float, float, float, float], seg2: tuple[floa
 
 def cluster_points(points: Iterable[Tuple[float, float]], cluster_dist: float = 10.0) -> list[Tuple[float, float]]:
     """
-    Кластеризация точек по расстоянию, возвращает центр каждого кластера.
-    Простейщий greedy: проходим по точкам, если ближе чем cluster_dist к существующему кластеру - добавляем туда.
+    Простое дедуплирование точек с привязкой к сетке (grid-based), чтобы не слипались
+    близкие, но разные вершины. Возвращает по одной точке на ячейку.
     """
-    clusters: list[list[float | int]] = []
-    for p in points:
-        placed: bool = False
-        for c in clusters:
-            cx, cy, count = c  # type: ignore
-            if (p[0] - cx) ** 2 + (p[1] - cy) ** 2 <= cluster_dist ** 2:
-                new_count: int = int(count) + 1
-                c[0] = (cx * count + p[0]) / new_count
-                c[1] = (cy * count + p[1]) / new_count
-                c[2] = new_count
-                placed = True
-                break
-        if not placed:
-            clusters.append([p[0], p[1], 1])
-    return [(float(c[0]), float(c[1])) for c in clusters]
+    if not points:
+        return []
+    bin_size = max(1.0, float(cluster_dist))
+    bins: dict[tuple[int, int], list[Tuple[float, float]]] = {}
+    for (x, y) in points:
+        bx = int(round(x / bin_size))
+        by = int(round(y / bin_size))
+        bins.setdefault((bx, by), []).append((x, y))
+    centers: list[Tuple[float, float]] = []
+    for pts in bins.values():
+        sx = 0.0
+        sy = 0.0
+        for (x, y) in pts:
+            sx += x
+            sy += y
+        n = float(len(pts))
+        centers.append((sx / n, sy / n))
+    return centers
 
 
 def count_intersections(image_path: str,
                         canny_thresh1=50, canny_thresh2=150,
                         hough_threshold=40, minLineLength=0, maxLineGap=10,
                         angle_merge_deg=5.0, rho_merge_px=20.0,
-                        cluster_dist=12.0,
+                        cluster_dist=6.0,
                         visualize=True,
                         out_vis_path="intersections_vis.png",
                         apply_clahe=True,
                         apply_blur=True,
                         use_auto_scaling=True,
-                        auto_base_diag=1000.0,
+                        auto_base_diag=1500.0,
+                        segment_extend_px=10.0,
                         near_parallel_deg=2.0,
                         return_raw_points=False):
     img: np.ndarray | None = cv2.imread(image_path)
@@ -188,10 +197,12 @@ def count_intersections(image_path: str,
 
         # Если minLineLength не задан (0), подбераю от размера изображения
         scaled_min_line_length: int = int(max(minLineLength, 0.05 * max(h, w)))
+        scaled_segment_extend: float = float(segment_extend_px) * scale
     else:
         scaled_cluster_dist: float = cluster_dist
         scaled_rho_merge: float = rho_merge_px
         scaled_min_line_length: int = minLineLength
+        scaled_segment_extend: float = segment_extend_px
 
     lines = cv2.HoughLinesP(edges,
                             rho=1,
@@ -209,19 +220,13 @@ def count_intersections(image_path: str,
 
     merged: list[tuple[float, float, float, float]] = merge_collinear_segments(segments,
                                       angle_thresh_deg=angle_merge_deg,
-                                      rho_thresh=scaled_rho_merge)
+                                      rho_thresh=scaled_rho_merge,
+                                      extend_px=scaled_segment_extend)
 
     pts: list[tuple[float, float]] = []
     near_parallel_rad: float = math.radians(near_parallel_deg)
     for a, b in combinations(merged, 2):
-        ax1, ay1, ax2, ay2 = a
-        bx1, by1, bx2, by2 = b
-        ang_a: float = normalize_angle_theta(math.atan2(ay2 - ay1, ax2 - ax1))
-        ang_b: float = normalize_angle_theta(math.atan2(by2 - by1, bx2 - bx1))
-        d_ang: float = abs(ang_a - ang_b)
-        d_ang: float = min(d_ang, math.pi - d_ang)
-        if d_ang < near_parallel_rad:
-            continue
+        # Не отбрасываем пары заранее по углу: сначала считаем пересечение
         p: tuple[float, float] | None = intersection_point(a, b)
         if p is not None:
             pts.append(p)
@@ -243,7 +248,7 @@ def count_intersections(image_path: str,
 
 
 if __name__ == "__main__":
-    img_path = "Examples/example.png"
+    img_path = "Examples/example7.png"
     cnt, merged_segments, intersections = count_intersections(img_path,
                                                                canny_thresh1=50,
                                                                canny_thresh2=150,
