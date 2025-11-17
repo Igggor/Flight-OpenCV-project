@@ -1,7 +1,7 @@
 from Tasks.first_tasks import count_intersections
 
 if __name__ == "__main__":
-    img_path = "Examples/example5.png"
+    img_path = "Examples/example8.png"
     cnt, merged_segments, intersections = count_intersections(img_path,
                                                                canny_thresh1=50,
                                                                canny_thresh2=150,
