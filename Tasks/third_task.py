@@ -46,6 +46,7 @@ def vector_from_skeleton(cnt, mask):
     # Fit line
     [vx, vy, x0, y0] = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
     axis = np.array([vx, vy]).reshape(2)
+    axis = axis / np.linalg.norm(axis)  # Нормализуем ось
     point_on_line = np.array([x0, y0]).reshape(2)
 
     # Проекции точек на линию
@@ -56,21 +57,39 @@ def vector_from_skeleton(cnt, mask):
     p_tail = pts[idx_min] + np.array([x, y])
     p_head_approx = pts[idx_max] + np.array([x, y])
 
-    # Коррекция головы: берем центр наконечника по минимальной толщине
-    # ищем пиксели с минимальной толщиной на конце (ближе к head_approx)
+    # Коррекция головы: берем крайнюю точку наконечника по минимальной толщине
+    # с небольшой коррекцией для устранения диагонального смещения
     ys_roi, xs_roi = np.where(roi_mask>0)
     roi_pts = np.vstack([xs_roi, ys_roi]).T
-    distances = np.linalg.norm(roi_pts - (p_head_approx - np.array([x,y])), axis=1)
-    min_thick = np.min([local_thickness(roi_mask, pt) for pt in roi_pts])
-    tip_pts = roi_pts[[local_thickness(roi_mask, pt)==min_thick for pt in roi_pts]]
+    thicknesses = np.array([local_thickness(roi_mask, pt) for pt in roi_pts])
+    min_thick = np.min(thicknesses)
+    
+    # Берем только пиксели кончика (минимальная толщина)
+    tip_pts_mask = thicknesses == min_thick
+    tip_pts = roi_pts[tip_pts_mask]
+    
     if len(tip_pts)>0:
-        tip_center = np.mean(tip_pts, axis=0) + np.array([x,y])
-        p_head = tip_center
+        # Берем максимальную проекцию (крайний кончик)
+        tip_pts_global = tip_pts + np.array([x, y])
+        rel_tip_pts = tip_pts_global - point_on_line
+        tip_projections = rel_tip_pts.dot(axis)
+        idx_tip_max = np.argmax(tip_projections)
+        p_head_tip = tip_pts_global[idx_tip_max]
+        
+        # Небольшая коррекция: если есть соседние точки, усредняем с ними
+        max_proj = np.max(tip_projections)
+        neighbor_threshold = max_proj - 1.5  # Толщина в 1-1.5 пикселя
+        neighbor_mask = tip_projections >= neighbor_threshold
+        if np.sum(neighbor_mask) > 1:
+            # Усредняем топ-точку с соседями для уменьшения шума
+            p_head = np.mean(tip_pts_global[neighbor_mask], axis=0)
+        else:
+            p_head = p_head_tip
     else:
         p_head = p_head_approx
 
-    dx = int(round(p_head[0]-p_tail[0]))
-    dy = int(round(p_head[1]-p_tail[1]))
+    dx = int(np.ceil(p_head[0]-p_tail[0]))
+    dy = int(np.ceil(p_head[1]-p_tail[1]))
 
     return dx, dy, (int(p_tail[0]), int(p_tail[1])), (int(p_head[0]), int(p_head[1]))
 
@@ -106,20 +125,21 @@ def process_image(path):
         cv2.circle(orig, tail, 3, (255,0,0), -1)
         cv2.circle(orig, head, 3, (0,255,0), -1)
 
-    print("\nВекторы (dx, dy):")
-    for i,v in enumerate(vectors,1):
-        print(f"{i}: dx={v[0]} dy={v[1]}")
-    print(f"\nСуммарный вектор: X={sum_x}, Y={sum_y}")
+    # print("\nВекторы (dx, dy):")
+    # for i,v in enumerate(vectors,1):
+    #     print(f"{i}: dx={v[0]} dy={v[1]}")
+    # print(f"\nСуммарный вектор: X={sum_x}, Y={sum_y}")
 
-    if SHOW_WINDOWS:
-        cv2.imshow("Result", orig)
-        cv2.imshow("Binary", bw)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+    # if SHOW_WINDOWS:
+    #     cv2.imshow("Result", orig)
+    #     cv2.imshow("Binary", bw)
+    #     cv2.waitKey(0)
+    #     cv2.destroyAllWindows()
 
     return sum_x, sum_y, vectors
 
 
 if __name__ == "__main__":
     IMG = "Examples/vec1.png"
-    process_image(IMG)
+    s_x, s_y, vcs = process_image(IMG)
+    print("ANSWER", s_x + s_y)
